@@ -1,17 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Folder, BookOpen, UserCircle, MessageSquareDashed, Blocks, Cpu, Settings, LayoutPanelLeft, MessageSquare } from 'lucide-react';
+import { Search, Plus, Folder, BookOpen, UserCircle, MessageSquareDashed, Blocks, Cpu, LayoutPanelLeft, MessageSquare, FileText } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/lib/store';
 
+interface SearchResultItem {
+  icon: any;
+  label: string;
+  action: () => void;
+}
+
 export function CommandPalette({ open, setOpen }: { open: boolean, setOpen: (open: boolean) => void }) {
   const [query, setQuery] = useState('');
+  const [dbResults, setDbResults] = useState<SearchResultItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const navigate = useNavigate();
-  const { createConversation, conversations } = useAppStore();
+  const { createConversation } = useAppStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const navCommands = [
+  const navCommands: SearchResultItem[] = [
     { icon: Plus, label: 'New Chat', action: () => { createConversation(); navigate('/'); } },
     { icon: LayoutPanelLeft, label: 'Compare Models', action: () => navigate('/compare') },
     { icon: Folder, label: 'Projects', action: () => navigate('/projects') },
@@ -22,24 +29,49 @@ export function CommandPalette({ open, setOpen }: { open: boolean, setOpen: (ope
     { icon: Cpu, label: 'Models', action: () => navigate('/models') },
   ];
 
-  // Search across real conversations
-  const chatResults = query.trim()
-    ? Object.values(conversations)
-        .filter(c =>
-          c.title.toLowerCase().includes(query.toLowerCase()) ||
-          c.messages.some(m => m.parts.some(p => p.type === 'text' && p.text.toLowerCase().includes(query.toLowerCase())))
-        )
-        .map(c => ({
-          icon: MessageSquare,
-          label: `Chat: ${c.title}`,
-          action: () => navigate(`/chat/${c.id}`)
-        }))
-    : [];
+  useEffect(() => {
+    if (!query.trim()) {
+      setDbResults([]);
+      return;
+    }
 
-  const allFiltered = [
-    ...chatResults,
-    ...navCommands.filter(c => c.label.toLowerCase().includes(query.toLowerCase()))
-  ];
+    const timer = setTimeout(() => {
+      fetch(`/api/storage/search?q=${encodeURIComponent(query.trim())}`)
+        .then(res => res.ok ? res.json() : { results: [] })
+        .then(data => {
+          if (data && data.results) {
+            const mapped: SearchResultItem[] = data.results.map((r: any) => {
+              if (r.type === 'chat') {
+                return {
+                  icon: MessageSquare,
+                  label: `Chat: ${r.title}`,
+                  action: () => navigate(`/chat/${r.id}`)
+                };
+              } else if (r.type === 'project') {
+                return {
+                  icon: Folder,
+                  label: `Project: ${r.title}`,
+                  action: () => navigate('/projects')
+                };
+              } else {
+                return {
+                  icon: FileText,
+                  label: `Asset: ${r.title}`,
+                  action: () => navigate('/library')
+                };
+              }
+            });
+            setDbResults(mapped);
+          }
+        })
+        .catch(err => console.error('Search failed:', err));
+    }, 150);
+
+    return () => clearTimeout(timer);
+  }, [query, navigate]);
+
+  const filteredNav = navCommands.filter(c => c.label.toLowerCase().includes(query.toLowerCase()));
+  const allFiltered = [...dbResults, ...filteredNav];
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -101,7 +133,7 @@ export function CommandPalette({ open, setOpen }: { open: boolean, setOpen: (ope
           <input 
             ref={inputRef}
             className="flex-1 h-14 bg-transparent border-none outline-none px-4 text-foreground placeholder:text-muted-foreground/60 text-[15px]"
-            placeholder="Type a command or search chats and views..."
+            placeholder="Search SQLite chats, messages, projects, and assets..."
             autoFocus
             value={query}
             onChange={e => setQuery(e.target.value)}
@@ -115,7 +147,7 @@ export function CommandPalette({ open, setOpen }: { open: boolean, setOpen: (ope
         <div className="max-h-[350px] overflow-y-auto py-2" ref={listRef}>
           {allFiltered.length > 0 ? (
             <div className="px-2 space-y-0.5">
-              <div className="px-3 py-2 text-xs font-medium text-muted-foreground">Results</div>
+              <div className="px-3 py-2 text-xs font-medium text-muted-foreground">Results ({allFiltered.length})</div>
               {allFiltered.map((cmd, i) => (
                 <button
                   key={i}

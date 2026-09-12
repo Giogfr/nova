@@ -24,6 +24,8 @@ export interface Conversation {
   updatedAt: number;
   parentId?: string;
   isTemporary?: boolean;
+  isPinned?: boolean;
+  isArchived?: boolean;
   mode?: string;
 }
 
@@ -68,6 +70,8 @@ interface AppState {
   setCurrentConversation: (id: string) => void;
   addMessage: (conversationId: string, role: Role, parts: MessagePart[]) => void;
   updateLastMessage: (conversationId: string, updater: (msg: Message) => void) => void;
+  togglePinConversation: (id: string) => void;
+  toggleArchiveConversation: (id: string) => void;
   toggleSidebar: () => void;
   deleteConversation: (id: string) => void;
 }
@@ -139,6 +143,8 @@ export const useAppStore = create<AppState>()(
           messages: [],
           updatedAt: Date.now(),
           isTemporary,
+          isPinned: false,
+          isArchived: false,
         };
         set((state) => ({
           conversations: { ...state.conversations, [id]: newConv },
@@ -165,6 +171,8 @@ export const useAppStore = create<AppState>()(
           messages: JSON.parse(JSON.stringify(slicedMessages)),
           updatedAt: Date.now(),
           parentId: conversationId,
+          isPinned: false,
+          isArchived: false,
         };
 
         set((s) => ({
@@ -241,6 +249,26 @@ export const useAppStore = create<AppState>()(
               [conversationId]: updatedConv,
             },
           };
+        });
+      },
+
+      togglePinConversation: (id) => {
+        set(state => {
+          const conv = state.conversations[id];
+          if (!conv) return state;
+          const updated = { ...conv, isPinned: !conv.isPinned, updatedAt: Date.now() };
+          get().syncConversationToBackend(updated);
+          return { conversations: { ...state.conversations, [id]: updated } };
+        });
+      },
+
+      toggleArchiveConversation: (id) => {
+        set(state => {
+          const conv = state.conversations[id];
+          if (!conv) return state;
+          const updated = { ...conv, isArchived: !conv.isArchived, updatedAt: Date.now() };
+          get().syncConversationToBackend(updated);
+          return { conversations: { ...state.conversations, [id]: updated } };
         });
       },
 
