@@ -3,18 +3,31 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { HomeContent } from '@/features/chat/HomeContent';
 import { ChatMessage } from './ChatMessage';
 import { useAppStore } from '@/lib/store';
-import { Sparkle, BrainCircuit, Blocks, Mic, ArrowUp, Plus, StopCircle, Code2, X, Maximize2 } from 'lucide-react';
-import { generateChatResponse } from '@/lib/ai/gemini';
+import { Sparkle, BrainCircuit, Blocks, Mic, ArrowUp, Plus, StopCircle, Code2, X, Maximize2, Check, Globe } from 'lucide-react';
+import { sendStreamRequest } from '@/lib/ai/gateway';
 import { ModelSelector } from './ModelSelector';
 import { SlashCommandMenu } from './SlashCommandMenu';
+import * as Popover from '@radix-ui/react-popover';
 
 export function ChatContainer() {
   const { id: routeId } = useParams();
   const navigate = useNavigate();
-  const { currentConversationId, conversations, addMessage, updateLastMessage, createConversation, setCurrentConversation, currentModel } = useAppStore();
+  const {
+    currentConversationId,
+    conversations,
+    addMessage,
+    updateLastMessage,
+    createConversation,
+    setCurrentConversation,
+    currentModel,
+    providers
+  } = useAppStore();
   
   const [isArtifactOpen, setIsArtifactOpen] = useState(false);
   const [artifactContent, setArtifactContent] = useState('');
+  const [reasoningEffort, setReasoningEffort] = useState<'off' | 'low' | 'medium' | 'high'>('medium');
+  const [toolsEnabled, setToolsEnabled] = useState(true);
+  const [isListening, setIsListening] = useState(false);
 
   useEffect(() => {
     if (routeId && routeId !== currentConversationId) {
@@ -24,9 +37,8 @@ export function ChatContainer() {
         navigate('/');
       }
     } else if (!routeId && currentConversationId && conversations[currentConversationId]?.messages.length === 0) {
-      // If we are at root, and current conversation is empty, stay on it.
+      // Stay on current conversation
     } else if (!routeId && currentConversationId && conversations[currentConversationId]?.messages.length > 0) {
-      // If we are at root, and current conversation has messages, create a new one.
       const newId = createConversation();
       setCurrentConversation(newId);
     }
@@ -66,47 +78,67 @@ export function ChatContainer() {
     setShowSlashMenu(false);
     
     addMessage(convId, 'user', [{ type: 'text', text: userText }]);
-    
-    // Add empty assistant message to stream into
     addMessage(convId, 'assistant', [{ type: 'text', text: '' }]);
     
     setIsGenerating(true);
     abortControllerRef.current = new AbortController();
 
+    const selectedModelObj = useAppStore.getState().models.find(m => m.id === currentModel);
+    const selectedProviderObj = providers.find(p => p.id === selectedModelObj?.providerId) || providers[0];
+
     try {
-      // Get conversation history for context
       const history = useAppStore.getState().conversations[convId].messages.slice(0, -1).map(m => ({
         role: m.role,
-        content: m.parts.map(p => p.type === 'text' ? p.text : '').join('\n')
+        content: m.parts.map(p => (p.type === 'text' ? p.text : '')).join('\n')
       }));
 
-      await generateChatResponse(
-        userText,
-        history,
-        (chunk) => {
-          updateLastMessage(convId!, (msg) => {
-            const textPart = msg.parts.find(p => p.type === 'text');
-            if (textPart && textPart.type === 'text') {
-              textPart.text += chunk;
-            } else {
-              msg.parts.push({ type: 'text', text: chunk });
-            }
-          });
-          
-          // Basic heuristic: if it looks like code, open artifact
-          if (chunk.includes('```') && !isArtifactOpen) {
-            // Uncomment to auto-open artifacts on code blocks
-            // setIsArtifactOpen(true);
+      await sendStreamRequest(
+        {
+          modelId: currentModel,
+          providerId: selectedProviderObj?.id || 'gemini',
+          providerConfig: selectedProviderObj,
+          messages: history,
+          reasoningEffort,
+          toolsEnabled,
+        },
+        (event) => {
+          if (event.type === 'text_delta' && event.text) {
+            updateLastMessage(convId!, (msg) => {
+              const textPart = msg.parts.find(p => p.type === 'text');
+              if (textPart && textPart.type === 'text') {
+                textPart.text += event.text;
+              } else {
+                msg.parts.push({ type: 'text', text: event.text || '' });
+              }
+
+              // Auto-detect code block to stream into artifact side panel
+              if (textPart && textPart.type === 'text' && textPart.text.includes('```')) {
+                const codeMatch = textPart.text.match(/```(?:\w+)?\n([\s\S]*?)```/);
+                if (codeMatch && codeMatch[1]) {
+                  setArtifactContent(codeMatch[1]);
+                }
+              }
+            });
+          } else if (event.type === 'reasoning_delta' && event.reasoning) {
+            updateLastMessage(convId!, (msg) => {
+              const reasonPart = msg.parts.find(p => p.type === 'reasoning');
+              if (reasonPart && reasonPart.type === 'reasoning') {
+                reasonPart.text += event.reasoning;
+              } else {
+                msg.parts.unshift({ type: 'reasoning', text: event.reasoning || '' });
+              }
+            });
+          } else if (event.type === 'error' && event.error) {
+            updateLastMessage(convId!, (msg) => {
+              msg.parts.push({ type: 'text', text: `\n\n**Error:** ${event.error}` });
+            });
           }
         },
         abortControllerRef.current.signal
       );
     } catch (error: any) {
       if (error.name !== 'AbortError') {
-        console.error('Generation error:', error);
-        updateLastMessage(convId!, (msg) => {
-          msg.parts.push({ type: 'text', text: '\n\n**Error:** Failed to generate response.' });
-        });
+        console.error('Generation stream error:', error);
       }
     } finally {
       setIsGenerating(false);
@@ -121,7 +153,6 @@ export function ChatContainer() {
     e.target.style.height = 'auto';
     e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
 
-    // Handle slash menu trigger
     const match = val.match(/(^|\s)\/([a-zA-Z0-9]*)$/);
     if (match) {
       setShowSlashMenu(true);
@@ -142,11 +173,7 @@ export function ChatContainer() {
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
-      if (showSlashMenu) {
-        // Let the menu handle it if it wanted to, but we don't have arrow keys for menu yet.
-        // For simplicity, just close menu and don't send if menu is open
-        // Actually, just let it send if they press enter
-      } else {
+      if (!showSlashMenu) {
         e.preventDefault();
         handleSend();
       }
@@ -159,6 +186,31 @@ export function ChatContainer() {
   const handleStop = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
+    }
+  };
+
+  const toggleVoiceDictation = () => {
+    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
+      alert('Speech recognition is not supported in your current browser engine.');
+      return;
+    }
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    if (!isListening) {
+      setIsListening(true);
+      recognition.start();
+      recognition.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        setInput(prev => (prev ? `${prev} ${transcript}` : transcript));
+        setIsListening(false);
+      };
+      recognition.onerror = () => setIsListening(false);
+      recognition.onend = () => setIsListening(false);
+    } else {
+      setIsListening(false);
     }
   };
 
@@ -186,33 +238,73 @@ export function ChatContainer() {
             onClick={() => {
               const fileInput = document.createElement('input');
               fileInput.type = 'file';
+              fileInput.onchange = (e: any) => {
+                const file = e.target?.files?.[0];
+                if (file) {
+                  setInput(prev => `${prev}\n[Attached file: ${file.name}]`);
+                }
+              };
               fileInput.click();
             }}
             className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-muted/50 text-muted-foreground border border-transparent hover:border-border/60 transition-all"
-            title="Upload file"
+            title="Upload file attachment"
           >
             <Plus className="w-4 h-4" />
           </button>
 
           <div className="flex items-center gap-1.5 bg-muted/30 rounded-full p-1 border border-border/40">
             <ModelSelector />
-            <ComposerDropdown icon={BrainCircuit} label="Thinking" onClick={() => alert('Thinking mode toggled')} />
-            <ComposerDropdown icon={Blocks} label="Tools" onClick={() => alert('Tools toggled')} />
+
+            {/* Reasoning Selector */}
+            <Popover.Root>
+              <Popover.Trigger asChild>
+                <button className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${reasoningEffort !== 'off' ? 'bg-background shadow-sm border border-border/40 text-foreground' : 'text-muted-foreground hover:bg-background/50'}`}>
+                  <BrainCircuit className="w-3.5 h-3.5 text-primary" />
+                  <span>Reasoning: {reasoningEffort}</span>
+                </button>
+              </Popover.Trigger>
+              <Popover.Portal>
+                <Popover.Content className="z-50 w-44 bg-surface border border-border/60 rounded-xl shadow-xl p-1 mt-1">
+                  {(['off', 'low', 'medium', 'high'] as const).map((level) => (
+                    <button
+                      key={level}
+                      onClick={() => setReasoningEffort(level)}
+                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs capitalize transition-colors ${reasoningEffort === level ? 'bg-surface-selected font-medium text-foreground' : 'text-muted-foreground hover:bg-surface-hover'}`}
+                    >
+                      <span>{level} effort</span>
+                      {reasoningEffort === level && <Check className="w-3.5 h-3.5 text-foreground" />}
+                    </button>
+                  ))}
+                </Popover.Content>
+              </Popover.Portal>
+            </Popover.Root>
+
+            {/* Tools Toggle */}
+            <button
+              onClick={() => setToolsEnabled(!toolsEnabled)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${toolsEnabled ? 'bg-background shadow-sm border border-border/40 text-foreground' : 'text-muted-foreground hover:bg-background/50'}`}
+              title="Toggle AI Tool Execution"
+            >
+              <Blocks className="w-3.5 h-3.5 text-primary" />
+              <span>Tools: {toolsEnabled ? 'On' : 'Off'}</span>
+            </button>
           </div>
         </div>
         
         <div className="flex items-center gap-2">
           <button 
-            onClick={() => alert('Voice input activated')}
-            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-muted/50 text-muted-foreground transition-all"
-            title="Voice Input"
+            onClick={toggleVoiceDictation}
+            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all ${isListening ? 'bg-rose-500 text-white animate-pulse' : 'hover:bg-muted/50 text-muted-foreground'}`}
+            title="Voice Dictation"
           >
             <Mic className="w-4 h-4" />
           </button>
+
           {isGenerating ? (
             <button 
               onClick={handleStop}
               className="w-9 h-9 rounded-full flex items-center justify-center bg-foreground text-background shadow-md hover:opacity-90 transition-all"
+              title="Stop Generation"
             >
               <StopCircle className="w-4 h-4" />
             </button>
@@ -247,7 +339,6 @@ export function ChatContainer() {
                 };
                 if (prefixes[action]) {
                   setInput(prefixes[action]);
-                  // Focus the textarea
                   setTimeout(() => {
                     const textarea = document.querySelector('textarea');
                     if (textarea) textarea.focus();
@@ -258,7 +349,15 @@ export function ChatContainer() {
           ) : (
             <div className="py-4">
               {messages.map((msg) => (
-                <ChatMessage key={msg.id} message={msg} />
+                <ChatMessage
+                  key={msg.id}
+                  message={msg}
+                  onRegenerate={() => {
+                    if (msg.role === 'assistant') {
+                      handleSend();
+                    }
+                  }}
+                />
               ))}
             </div>
           )}
@@ -274,7 +373,7 @@ export function ChatContainer() {
                 <button 
                   onClick={() => setIsArtifactOpen(true)}
                   className="mb-2 w-10 h-10 rounded-full bg-card border border-border/60 shadow-sm flex items-center justify-center text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
-                  title="Open Artifacts"
+                  title="Open Artifacts Panel"
                 >
                   <Code2 className="w-4 h-4" />
                 </button>
@@ -289,12 +388,9 @@ export function ChatContainer() {
           <div className="h-14 border-b border-border/40 flex items-center justify-between px-4 bg-background/50 backdrop-blur-sm">
             <div className="flex items-center gap-2">
               <Code2 className="w-4 h-4 text-primary" />
-              <span className="font-medium text-sm text-foreground">Code Artifact</span>
+              <span className="font-medium text-sm text-foreground">Code & Document Artifact</span>
             </div>
             <div className="flex items-center gap-2">
-              <button className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded-md transition-colors">
-                <Maximize2 className="w-4 h-4" />
-              </button>
               <button 
                 onClick={() => setIsArtifactOpen(false)}
                 className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded-md transition-colors"
@@ -305,27 +401,19 @@ export function ChatContainer() {
           </div>
           <div className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center text-muted-foreground">
             {artifactContent ? (
-              <div className="w-full h-full text-sm font-mono whitespace-pre-wrap">{artifactContent}</div>
+              <div className="w-full h-full text-sm font-mono whitespace-pre-wrap bg-card border border-border/40 p-4 rounded-xl overflow-x-auto text-foreground">
+                {artifactContent}
+              </div>
             ) : (
               <div className="text-center">
                 <Code2 className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-                <p>No active artifact.</p>
-                <p className="text-sm">Generated code, documents, and web views will appear here.</p>
+                <p className="font-medium text-foreground">No active artifact</p>
+                <p className="text-xs text-muted-foreground mt-1">Generated code blocks, long documents, and web view previews automatically appear here.</p>
               </div>
             )}
           </div>
         </div>
       )}
     </div>
-  );
-}
-
-function ComposerDropdown({ icon: Icon, label, active, onClick }: { icon: any, label: string, active?: boolean, onClick?: () => void }) {
-  return (
-    <button onClick={onClick} className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${active ? 'bg-background shadow-sm border border-border/40 text-foreground' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}`}>
-      <Icon className={`w-3.5 h-3.5 ${active ? 'fill-current' : ''}`} />
-      <span>{label}</span>
-      <svg width="10" height="10" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg" className="opacity-50 ml-0.5"><path d="M4 6L7.5 10.5L11 6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round"/></svg>
-    </button>
   );
 }

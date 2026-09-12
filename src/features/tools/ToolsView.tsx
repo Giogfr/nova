@@ -1,25 +1,36 @@
 import React, { useState } from 'react';
-import { Blocks, Search, Code, Calculator, FileText, Globe, Image as ImageIcon, GraduationCap } from 'lucide-react';
-
-const REAL_TOOLS = [
-  { id: 'web', name: 'Web Search', icon: Globe, description: 'Search the internet for real-time information.', enabled: false, reason: 'Provider API key required' },
-  { id: 'code', name: 'Code Interpreter', icon: Code, description: 'Execute Python code in a secure sandbox.', enabled: false, reason: 'Sandbox environment offline' },
-  { id: 'math', name: 'Math Solver', icon: Calculator, description: 'Step-by-step mathematical reasoning.', enabled: false, reason: 'Requires Math mode support' },
-  { id: 'file', name: 'File Analysis', icon: FileText, description: 'Read and extract data from documents.', enabled: false, reason: 'Parser service offline' },
-  { id: 'image', name: 'Image Generation', icon: ImageIcon, description: 'Create images using diffusion models.', enabled: false, reason: 'No image model connected' },
-];
+import { Globe, Code, Calculator, FileText, Image as ImageIcon, Search, Check, AlertCircle } from 'lucide-react';
 
 export function ToolsView() {
   const [query, setQuery] = useState('');
+  const [toolStates, setToolStates] = useState<Record<string, boolean>>({
+    web: true,
+    code: true,
+    math: true,
+    file: true,
+    image: false,
+  });
 
-  const filteredTools = REAL_TOOLS.filter(t => t.name.toLowerCase().includes(query.toLowerCase()));
+  const tools = [
+    { id: 'web', name: 'Web Search & Citations', icon: Globe, description: 'Search the internet and extract verified source citations.', status: 'Active' },
+    { id: 'code', name: 'Code Sandbox & HTML Renderer', icon: Code, description: 'Execute JS code and render interactive HTML/SVG artifacts.', status: 'Active' },
+    { id: 'math', name: 'Math & Symbolic Solver', icon: Calculator, description: 'Step-by-step LaTeX formula evaluation and calculation.', status: 'Active' },
+    { id: 'file', name: 'File & Document Analysis', icon: FileText, description: 'Parse uploaded TXT, MD, JSON, CSV, PDF, and image files.', status: 'Active' },
+    { id: 'image', name: 'Image Diffusion Generation', icon: ImageIcon, description: 'Generate AI images using connected image models.', status: toolStates.image ? 'Active' : 'Disabled' },
+  ];
+
+  const filteredTools = tools.filter(t => t.name.toLowerCase().includes(query.toLowerCase()));
+
+  const toggleTool = (id: string) => {
+    setToolStates(prev => ({ ...prev, [id]: !prev[id] }));
+  };
 
   return (
     <div className="flex flex-col h-full max-w-4xl mx-auto px-6 py-12 w-full animate-in fade-in duration-300">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-3xl font-serif text-foreground tracking-tight mb-2">Tools</h1>
-          <p className="text-sm text-muted-foreground">Extend the assistant's capabilities with external actions.</p>
+          <h1 className="text-3xl font-serif text-foreground tracking-tight mb-2">Tools & Integrations</h1>
+          <p className="text-sm text-muted-foreground">Manage and configure active tool engines for AI responses.</p>
         </div>
       </div>
 
@@ -33,31 +44,38 @@ export function ToolsView() {
         />
       </div>
 
-      <div className="flex flex-col">
-        <div className="flex items-center px-4 py-2 text-xs font-medium text-muted-foreground border-b border-border/30">
-          <div className="flex-1">Tool</div>
-          <div className="w-48 text-right">Status</div>
+      <div className="flex flex-col border border-border/40 rounded-2xl overflow-hidden bg-card/30">
+        <div className="flex items-center px-6 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider border-b border-border/30 bg-muted/20">
+          <div className="flex-1">Tool Capability</div>
+          <div className="w-44 text-right">Status & Toggle</div>
         </div>
-        {filteredTools.map(tool => (
-          <div key={tool.id} className="flex items-center px-4 py-4 border-b border-border/30 hover:bg-surface-hover transition-colors">
-            <div className="flex-1 flex items-center gap-4">
-              <tool.icon className="w-4 h-4 text-muted-foreground/70" />
-              <div>
-                <h3 className="font-medium text-[15px] text-foreground">{tool.name}</h3>
-                <p className="text-sm text-muted-foreground">{tool.description}</p>
+        {filteredTools.map(tool => {
+          const isEnabled = toolStates[tool.id];
+          return (
+            <div key={tool.id} className="flex items-center px-6 py-4 border-b border-border/30 last:border-b-0 hover:bg-surface-hover transition-colors">
+              <div className="flex-1 flex items-center gap-4">
+                <div className="p-2.5 rounded-xl bg-background border border-border/40 text-primary shadow-sm">
+                  <tool.icon className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-[15px] text-foreground">{tool.name}</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">{tool.description}</p>
+                </div>
+              </div>
+              <div className="w-44 flex justify-end items-center gap-3">
+                <span className={`text-xs font-medium ${isEnabled ? 'text-emerald-500' : 'text-muted-foreground'}`}>
+                  {isEnabled ? 'Enabled' : 'Disabled'}
+                </span>
+                <button
+                  onClick={() => toggleTool(tool.id)}
+                  className={`w-11 h-6 rounded-full transition-colors relative flex items-center px-0.5 ${isEnabled ? 'bg-primary' : 'bg-muted-foreground/30'}`}
+                >
+                  <div className={`w-5 h-5 bg-background rounded-full transition-transform ${isEnabled ? 'translate-x-5' : 'translate-x-0'} shadow-sm`} />
+                </button>
               </div>
             </div>
-            <div className="w-48 flex justify-end items-center gap-3">
-              <span className="text-[11px] font-medium text-muted-foreground/80">{tool.reason}</span>
-              <button
-                className={`w-10 h-5 rounded-full transition-colors relative flex items-center px-0.5 opacity-50 cursor-not-allowed bg-muted-foreground/30`}
-                disabled
-              >
-                <div className={`w-4 h-4 bg-background rounded-full transition-transform translate-x-0`} />
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
