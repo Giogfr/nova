@@ -1,18 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { 
   Sparkle, Plus, Search, Folder, BookOpen, UserCircle, 
   MessageSquareDashed, Blocks, Cpu, Home, GraduationCap, 
-  Code2, Settings, MessageSquare
+  Code2, Settings, MessageSquare, MoreHorizontal, Trash2, Edit2, GitFork, Pin, Archive, FolderPlus
 } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { useAppStore } from '@/lib/store';
 import { SettingsModal } from '@/components/settings/SettingsModal';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
 
 export function Sidebar() {
-  const { toggleSidebar, createConversation, conversations, currentWorkspace } = useAppStore();
+  const { toggleSidebar, createConversation, conversations, currentWorkspace, deleteConversation, branchConversation, togglePinConversation, toggleArchiveConversation } = useAppStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -22,11 +29,81 @@ export function Sidebar() {
     navigate('/');
   };
 
-  const recentChats = Object.values(conversations)
-    .filter(c => c.messages.length > 0)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 5);
-    
+  const activeChats = Object.values(conversations)
+    .filter(c => c.messages.length > 0 && !c.isArchived)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+
+  const pinnedChats = activeChats.filter(c => c.isPinned);
+  const recentChats = activeChats.filter(c => !c.isPinned);
+
+  const renderChatRow = (chat: any) => (
+    <div key={chat.id} className="group relative flex items-center">
+      <NavLink
+        to={`/chat/${chat.id}`}
+        className={({ isActive }) => `w-full flex items-center gap-3 px-3 py-2 pr-8 rounded-lg text-sm transition-colors ${isActive || (location.pathname === '/' && useAppStore.getState().currentConversationId === chat.id) ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
+      >
+        <MessageSquare className="w-4 h-4" />
+        <span className="flex-1 text-left truncate">{chat.title}</span>
+        {chat.isPinned && <Pin className="w-3 h-3 text-primary shrink-0" />}
+      </NavLink>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger className="absolute right-2 p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground transition-opacity">
+          <MoreHorizontal className="w-3.5 h-3.5" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-44 bg-surface border border-border/60 rounded-xl p-1 shadow-lg text-xs z-50">
+          <DropdownMenuItem
+            onClick={() => togglePinConversation(chat.id)}
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-surface-hover cursor-pointer"
+          >
+            <Pin className="w-3.5 h-3.5" /> {chat.isPinned ? 'Unpin Chat' : 'Pin to Top'}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => {
+              const newTitle = prompt('Rename conversation:', chat.title);
+              if (newTitle && newTitle.trim()) {
+                useAppStore.setState(state => ({
+                  conversations: {
+                    ...state.conversations,
+                    [chat.id]: { ...state.conversations[chat.id], title: newTitle.trim() }
+                  }
+                }));
+              }
+            }}
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-surface-hover cursor-pointer"
+          >
+            <Edit2 className="w-3.5 h-3.5" /> Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => {
+              const lastMsg = chat.messages[chat.messages.length - 1];
+              if (lastMsg) {
+                const newId = branchConversation(chat.id, lastMsg.id);
+                navigate(`/chat/${newId}`);
+              }
+            }}
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-surface-hover cursor-pointer"
+          >
+            <GitFork className="w-3.5 h-3.5" /> Fork Branch
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => toggleArchiveConversation(chat.id)}
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-surface-hover cursor-pointer"
+          >
+            <Archive className="w-3.5 h-3.5" /> Archive Chat
+          </DropdownMenuItem>
+          <DropdownMenuSeparator className="bg-border/40 my-1" />
+          <DropdownMenuItem
+            onClick={() => deleteConversation(chat.id)}
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-rose-500/10 text-rose-500 cursor-pointer"
+          >
+            <Trash2 className="w-3.5 h-3.5" /> Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+
   return (
     <>
     <div className="w-[260px] flex-shrink-0 flex flex-col h-full bg-background border-r border-border/40">
@@ -67,26 +144,28 @@ export function Sidebar() {
           <SidebarItem icon={Cpu} label="Models" to="/models" />
         </div>
 
-        {recentChats.length > 0 && (
-          <div className="mt-6 mb-2">
-            <h3 className="px-3 text-xs font-medium text-muted-foreground mb-1">Recent</h3>
+        {pinnedChats.length > 0 && (
+          <div className="mt-4 mb-2">
+            <h3 className="px-3 text-xs font-semibold text-muted-foreground/80 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+              <Pin className="w-3 h-3 text-primary" /> Pinned
+            </h3>
             <div className="space-y-0.5">
-              {recentChats.map(chat => (
-                <NavLink 
-                  key={chat.id}
-                  to={`/chat/${chat.id}`}
-                  className={({ isActive }) => `w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${isActive || (location.pathname === '/' && useAppStore.getState().currentConversationId === chat.id) ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
-                >
-                  <MessageSquare className="w-4 h-4" />
-                  <span className="flex-1 text-left truncate">{chat.title}</span>
-                </NavLink>
-              ))}
+              {pinnedChats.map(renderChatRow)}
+            </div>
+          </div>
+        )}
+
+        {recentChats.length > 0 && (
+          <div className="mt-4 mb-2">
+            <h3 className="px-3 text-xs font-semibold text-muted-foreground/80 uppercase tracking-wider mb-1">Recents</h3>
+            <div className="space-y-0.5">
+              {recentChats.map(renderChatRow)}
             </div>
           </div>
         )}
 
         <div className="mt-6 mb-2">
-          <h3 className="px-3 text-xs font-medium text-muted-foreground mb-1">Workspaces</h3>
+          <h3 className="px-3 text-xs font-semibold text-muted-foreground/80 uppercase tracking-wider mb-1">Workspaces</h3>
           <div className="space-y-0.5">
             <SidebarWorkspaceItem icon={Home} label="Personal" id="personal" />
             <SidebarWorkspaceItem icon={GraduationCap} label="Study" id="study" />

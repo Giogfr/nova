@@ -22,6 +22,10 @@ export interface Conversation {
   title: string;
   messages: Message[];
   updatedAt: number;
+  parentId?: string;
+  isTemporary?: boolean;
+  isPinned?: boolean;
+  isArchived?: boolean;
   mode?: string;
 }
 
@@ -33,7 +37,7 @@ export interface Provider {
   status: 'connected' | 'offline' | 'unknown' | 'error';
   baseUrl?: string;
   apiKeyStored: boolean;
-  apiKey?: string; // Optional, only kept locally
+  apiKey?: string;
 }
 
 export interface Model {
@@ -41,7 +45,7 @@ export interface Model {
   name: string;
   providerId: string;
   contextWindow?: string;
-  capabilities: string[]; // 'vision', 'tools', 'reasoning'
+  capabilities: string[];
 }
 
 interface AppState {
@@ -53,16 +57,21 @@ interface AppState {
   providers: Provider[];
   models: Model[];
   
+  loadFromBackend: () => Promise<void>;
+  syncConversationToBackend: (conv: Conversation) => Promise<void>;
   setProviders: (providers: Provider[]) => void;
   updateProvider: (id: string, updates: Partial<Provider>) => void;
   setModels: (models: Model[]) => void;
   
   setCurrentWorkspace: (ws: string) => void;
   setCurrentModel: (model: string) => void;
-  createConversation: () => string;
+  createConversation: (isTemporary?: boolean) => string;
+  branchConversation: (conversationId: string, fromMessageId: string) => string;
   setCurrentConversation: (id: string) => void;
   addMessage: (conversationId: string, role: Role, parts: MessagePart[]) => void;
   updateLastMessage: (conversationId: string, updater: (msg: Message) => void) => void;
+  togglePinConversation: (id: string) => void;
+  toggleArchiveConversation: (id: string) => void;
   toggleSidebar: () => void;
   deleteConversation: (id: string) => void;
 }
@@ -88,6 +97,35 @@ export const useAppStore = create<AppState>()(
         { id: 'nova-3.5', name: 'Nova 3.5', providerId: 'nova', capabilities: ['vision', 'tools'] }
       ],
 
+      loadFromBackend: async () => {
+        try {
+          const resp = await fetch('/api/storage/conversations');
+          if (resp.ok) {
+            const json = await resp.json();
+            if (json.conversations) {
+              set(state => ({
+                conversations: { ...state.conversations, ...json.conversations }
+              }));
+            }
+          }
+        } catch (err) {
+          console.warn('Backend SQLite hydration failed, relying on local cache:', err);
+        }
+      },
+
+      syncConversationToBackend: async (conv: Conversation) => {
+        if (conv.isTemporary) return;
+        try {
+          await fetch('/api/storage/conversations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversation: conv }),
+          });
+        } catch (err) {
+          console.error('Failed to sync conversation to SQLite:', err);
+        }
+      },
+
       setProviders: (providers) => set({ providers }),
       updateProvider: (id, updates) => set(state => ({
         providers: state.providers.map(p => p.id === id ? { ...p, ...updates } : p)
@@ -97,19 +135,52 @@ export const useAppStore = create<AppState>()(
       setCurrentWorkspace: (ws) => set({ currentWorkspace: ws }),
       setCurrentModel: (model) => set({ currentModel: model }),
 
-      createConversation: () => {
+      createConversation: (isTemporary = false) => {
         const id = uuidv4();
         const newConv: Conversation = {
           id,
-          title: 'New Chat',
+          title: isTemporary ? 'Temporary Chat' : 'New Chat',
           messages: [],
           updatedAt: Date.now(),
+          isTemporary,
+          isPinned: false,
+          isArchived: false,
         };
         set((state) => ({
           conversations: { ...state.conversations, [id]: newConv },
           currentConversationId: id,
         }));
+        if (!isTemporary) {
+          get().syncConversationToBackend(newConv);
+        }
         return id;
+      },
+
+      branchConversation: (conversationId, fromMessageId) => {
+        const state = get();
+        const targetConv = state.conversations[conversationId];
+        if (!targetConv) return conversationId;
+
+        const messageIdx = targetConv.messages.findIndex(m => m.id === fromMessageId);
+        const slicedMessages = messageIdx !== -1 ? targetConv.messages.slice(0, messageIdx + 1) : targetConv.messages;
+
+        const newId = uuidv4();
+        const branchedConv: Conversation = {
+          id: newId,
+          title: `${targetConv.title} (Branch)`,
+          messages: JSON.parse(JSON.stringify(slicedMessages)),
+          updatedAt: Date.now(),
+          parentId: conversationId,
+          isPinned: false,
+          isArchived: false,
+        };
+
+        set((s) => ({
+          conversations: { ...s.conversations, [newId]: branchedConv },
+          currentConversationId: newId,
+        }));
+        get().syncConversationToBackend(branchedConv);
+        return newId;
       },
 
       setCurrentConversation: (id) => set({ currentConversationId: id }),
@@ -127,22 +198,26 @@ export const useAppStore = create<AppState>()(
           };
           
           let title = conv.title;
-          if (conv.messages.length === 0 && role === 'user') {
+          if (conv.messages.length === 0 && role === 'user' && !conv.isTemporary) {
             const textPart = parts.find(p => p.type === 'text');
             if (textPart && textPart.type === 'text') {
                title = textPart.text.slice(0, 30) + (textPart.text.length > 30 ? '...' : '');
             }
           }
 
+          const updatedConv = {
+            ...conv,
+            title,
+            messages: [...conv.messages, newMessage],
+            updatedAt: Date.now(),
+          };
+
+          get().syncConversationToBackend(updatedConv);
+
           return {
             conversations: {
               ...state.conversations,
-              [conversationId]: {
-                ...conv,
-                title,
-                messages: [...conv.messages, newMessage],
-                updatedAt: Date.now(),
-              },
+              [conversationId]: updatedConv,
             },
           };
         });
@@ -160,40 +235,75 @@ export const useAppStore = create<AppState>()(
           const newMessages = [...conv.messages];
           newMessages[lastIndex] = lastMessage;
 
+          const updatedConv = {
+            ...conv,
+            messages: newMessages,
+            updatedAt: Date.now(),
+          };
+
+          get().syncConversationToBackend(updatedConv);
+
           return {
             conversations: {
               ...state.conversations,
-              [conversationId]: {
-                ...conv,
-                messages: newMessages,
-                updatedAt: Date.now(),
-              },
+              [conversationId]: updatedConv,
             },
           };
         });
       },
 
-      deleteConversation: (id) => set((state) => {
-        const newConvs = { ...state.conversations };
-        delete newConvs[id];
-        return {
-          conversations: newConvs,
-          currentConversationId: state.currentConversationId === id ? null : state.currentConversationId
-        };
-      }),
+      togglePinConversation: (id) => {
+        set(state => {
+          const conv = state.conversations[id];
+          if (!conv) return state;
+          const updated = { ...conv, isPinned: !conv.isPinned, updatedAt: Date.now() };
+          get().syncConversationToBackend(updated);
+          return { conversations: { ...state.conversations, [id]: updated } };
+        });
+      },
+
+      toggleArchiveConversation: (id) => {
+        set(state => {
+          const conv = state.conversations[id];
+          if (!conv) return state;
+          const updated = { ...conv, isArchived: !conv.isArchived, updatedAt: Date.now() };
+          get().syncConversationToBackend(updated);
+          return { conversations: { ...state.conversations, [id]: updated } };
+        });
+      },
+
+      deleteConversation: (id) => {
+        fetch(`/api/storage/conversations/${id}`, { method: 'DELETE' }).catch(() => {});
+        set((state) => {
+          const newConvs = { ...state.conversations };
+          delete newConvs[id];
+          return {
+            conversations: newConvs,
+            currentConversationId: state.currentConversationId === id ? null : state.currentConversationId
+          };
+        });
+      },
 
       toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
     }),
     {
       name: 'nova-storage',
-      partialize: (state) => ({
-        conversations: state.conversations,
-        currentConversationId: state.currentConversationId,
-        sidebarOpen: state.sidebarOpen,
-        currentModel: state.currentModel,
-        currentWorkspace: state.currentWorkspace,
-        providers: state.providers
-      }),
+      partialize: (state) => {
+        const persistentConversations: Record<string, Conversation> = {};
+        for (const [id, conv] of Object.entries(state.conversations)) {
+          if (!conv.isTemporary) {
+            persistentConversations[id] = conv;
+          }
+        }
+        return {
+          conversations: persistentConversations,
+          currentConversationId: state.currentConversationId,
+          sidebarOpen: state.sidebarOpen,
+          currentModel: state.currentModel,
+          currentWorkspace: state.currentWorkspace,
+          providers: state.providers
+        };
+      },
     }
   )
 );
