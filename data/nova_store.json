@@ -1,0 +1,12 @@
+{
+  "conversations": {
+    "test-id": {
+      "id": "test-id",
+      "title": "Persistence Test Chat",
+      "messages": []
+    }
+  },
+  "projects": [],
+  "library": [],
+  "settings": {}
+}

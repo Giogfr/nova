@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Code2, Play, Download, Copy, Check, X, RefreshCw, Eye, FileCode } from 'lucide-react';
+import { Code2, Play, Download, Copy, Check, X, RefreshCw, Eye, FileCode, History } from 'lucide-react';
 
 interface ArtifactPanelProps {
   content: string;
@@ -9,17 +9,20 @@ interface ArtifactPanelProps {
 export function ArtifactPanel({ content, onClose }: ArtifactPanelProps) {
   const [activeTab, setActiveTab] = useState<'preview' | 'code'>('preview');
   const [copied, setCopied] = useState(false);
+  const [versions, setVersions] = useState<string[]>([content]);
+  const [currentVersionIdx, setCurrentVersionIdx] = useState(0);
 
-  const isHtml = content.trim().toLowerCase().startsWith('<!doctype html>') || content.includes('<html') || content.includes('</div>');
+  const activeContent = versions[currentVersionIdx] || content;
+  const isHtml = activeContent.trim().toLowerCase().startsWith('<!doctype html>') || activeContent.includes('<html') || activeContent.includes('</div>');
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(content);
+    navigator.clipboard.writeText(activeContent);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleDownload = () => {
-    const blob = new Blob([content], { type: isHtml ? 'text/html' : 'text/plain' });
+    const blob = new Blob([activeContent], { type: isHtml ? 'text/html' : 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -34,6 +37,11 @@ export function ArtifactPanel({ content, onClose }: ArtifactPanelProps) {
         <div className="flex items-center gap-2">
           <Code2 className="w-4 h-4 text-primary" />
           <span className="font-semibold text-sm text-foreground">Artifact Workspace</span>
+          {versions.length > 1 && (
+            <span className="text-xs bg-muted/40 border border-border/40 px-2 py-0.5 rounded-md font-mono text-muted-foreground">
+              v{currentVersionIdx + 1}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -81,17 +89,17 @@ export function ArtifactPanel({ content, onClose }: ArtifactPanelProps) {
       </div>
 
       <div className="flex-1 overflow-hidden relative p-4">
-        {content ? (
+        {activeContent ? (
           activeTab === 'preview' && isHtml ? (
             <iframe
-              srcDoc={content}
+              srcDoc={activeContent}
               title="HTML Artifact Sandbox Preview"
               className="w-full h-full bg-white rounded-xl border border-border/40 shadow-sm"
               sandbox="allow-scripts"
             />
           ) : (
             <div className="w-full h-full overflow-y-auto p-4 bg-card border border-border/40 rounded-xl font-mono text-xs text-foreground whitespace-pre-wrap leading-relaxed shadow-inner">
-              {content}
+              {activeContent}
             </div>
           )
         ) : (

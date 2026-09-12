@@ -1,6 +1,32 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
+
+const DATA_DIR = path.join(process.cwd(), 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+const DB_FILE = path.join(DATA_DIR, 'nova_store.json');
+
+function loadDb() {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+    }
+  } catch (err) {
+    console.error('Failed to read db:', err);
+  }
+  return { conversations: {}, projects: [], library: [], settings: {} };
+}
+
+function saveDb(data: any) {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to save db:', err);
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -12,6 +38,18 @@ async function startServer() {
   const sendEvent = (res: express.Response, event: any) => {
     res.write(`data: ${JSON.stringify(event)}\n\n`);
   };
+
+  // Durable Storage Routes
+  app.get('/api/storage', (req, res) => {
+    return res.json(loadDb());
+  });
+
+  app.post('/api/storage', (req, res) => {
+    const current = loadDb();
+    const updated = { ...current, ...req.body };
+    saveDb(updated);
+    return res.json({ success: true, state: updated });
+  });
 
   // Test Provider Connection Endpoint
   app.post('/api/providers/test', async (req, res) => {
@@ -298,7 +336,6 @@ async function startServer() {
       // 3. Google Gemini Native / Fallback Proxy
       const geminiKey = apiKey || process.env.GEMINI_API_KEY;
       if (!geminiKey) {
-        // Fallback response if no keys configured
         sendEvent(res, { type: 'text_delta', text: `Please configure an API Key for provider "${providerType}" in Settings -> Models & Providers to enable live AI responses.` });
         sendEvent(res, { type: 'done' });
         return res.end();

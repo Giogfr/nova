@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { HomeContent } from '@/features/chat/HomeContent';
 import { ChatMessage } from './ChatMessage';
 import { useAppStore } from '@/lib/store';
-import { Sparkle, BrainCircuit, Blocks, Mic, ArrowUp, Plus, StopCircle, Code2, X, Maximize2, Check, Globe } from 'lucide-react';
+import { Sparkle, BrainCircuit, Blocks, Mic, ArrowUp, Plus, StopCircle, Code2, X, Check, FileText } from 'lucide-react';
 import { sendStreamRequest } from '@/lib/ai/gateway';
 import { ModelSelector } from './ModelSelector';
 import { SlashCommandMenu } from './SlashCommandMenu';
@@ -18,8 +18,10 @@ export function ChatContainer() {
     addMessage,
     updateLastMessage,
     createConversation,
+    branchConversation,
     setCurrentConversation,
     currentModel,
+    currentWorkspace,
     providers
   } = useAppStore();
   
@@ -28,6 +30,7 @@ export function ChatContainer() {
   const [reasoningEffort, setReasoningEffort] = useState<'off' | 'low' | 'medium' | 'high'>('medium');
   const [toolsEnabled, setToolsEnabled] = useState(true);
   const [isListening, setIsListening] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string }[]>([]);
 
   useEffect(() => {
     if (routeId && routeId !== currentConversationId) {
@@ -37,7 +40,7 @@ export function ChatContainer() {
         navigate('/');
       }
     } else if (!routeId && currentConversationId && conversations[currentConversationId]?.messages.length === 0) {
-      // Stay on current conversation
+      // Stay
     } else if (!routeId && currentConversationId && conversations[currentConversationId]?.messages.length > 0) {
       const newId = createConversation();
       setCurrentConversation(newId);
@@ -63,7 +66,7 @@ export function ChatContainer() {
   }, [messages, isGenerating]);
 
   const handleSend = async () => {
-    if (!input.trim() || isGenerating) return;
+    if ((!input.trim() && attachedFiles.length === 0) || isGenerating) return;
     
     let convId = currentConversationId;
     if (!convId || messages.length === 0) {
@@ -73,8 +76,14 @@ export function ChatContainer() {
       navigate(`/chat/${convId}`);
     }
 
-    const userText = input.trim();
+    let userText = input.trim();
+    if (attachedFiles.length > 0) {
+      const attachmentsText = attachedFiles.map(f => `\n\n[Attached File: ${f.name}]\n${f.content}`).join('\n');
+      userText = userText + attachmentsText;
+    }
+
     setInput('');
+    setAttachedFiles([]);
     setShowSlashMenu(false);
     
     addMessage(convId, 'user', [{ type: 'text', text: userText }]);
@@ -92,6 +101,9 @@ export function ChatContainer() {
         content: m.parts.map(p => (p.type === 'text' ? p.text : '')).join('\n')
       }));
 
+      // Workspace system instruction context
+      const systemInstruction = `Workspace: ${currentWorkspace.toUpperCase()}.\nAdhere strictly to user personalization preferences and workspace context.`;
+
       await sendStreamRequest(
         {
           modelId: currentModel,
@@ -100,6 +112,7 @@ export function ChatContainer() {
           messages: history,
           reasoningEffort,
           toolsEnabled,
+          systemInstruction,
         },
         (event) => {
           if (event.type === 'text_delta' && event.text) {
@@ -111,7 +124,6 @@ export function ChatContainer() {
                 msg.parts.push({ type: 'text', text: event.text || '' });
               }
 
-              // Auto-detect code block to stream into artifact side panel
               if (textPart && textPart.type === 'text' && textPart.text.includes('```')) {
                 const codeMatch = textPart.text.match(/```(?:\w+)?\n([\s\S]*?)```/);
                 if (codeMatch && codeMatch[1]) {
@@ -144,6 +156,21 @@ export function ChatContainer() {
       setIsGenerating(false);
       abortControllerRef.current = null;
     }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = e.clipboardData.getData('text');
+    if (text.length > 1500) {
+      e.preventDefault();
+      const fileName = `pasted_text_${attachedFiles.length + 1}.txt`;
+      setAttachedFiles(prev => [...prev, { name: fileName, content: text }]);
+    }
+  };
+
+  const handleBranch = (msgId: string) => {
+    if (!currentConversationId) return;
+    const newId = branchConversation(currentConversationId, msgId);
+    navigate(`/chat/${newId}`);
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -219,6 +246,24 @@ export function ChatContainer() {
       {showSlashMenu && (
         <SlashCommandMenu query={slashQuery} onSelect={handleSlashSelect} onClose={() => setShowSlashMenu(false)} />
       )}
+
+      {attachedFiles.length > 0 && (
+        <div className="px-4 pt-2 flex flex-wrap gap-2">
+          {attachedFiles.map((file, idx) => (
+            <div key={idx} className="flex items-center gap-2 bg-muted/40 border border-border/40 px-3 py-1 rounded-xl text-xs text-foreground">
+              <FileText className="w-3.5 h-3.5 text-primary" />
+              <span className="font-medium">{file.name}</span>
+              <button
+                onClick={() => setAttachedFiles(attachedFiles.filter((_, i) => i !== idx))}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="px-4 pt-3 pb-8">
         <textarea 
           ref={textareaRef}
@@ -228,6 +273,7 @@ export function ChatContainer() {
           style={{ minHeight: '32px', maxHeight: '200px' }}
           value={input}
           onChange={handleInputChange}
+          onPaste={handlePaste}
           onKeyDown={handleKeyDown}
         />
       </div>
@@ -241,7 +287,12 @@ export function ChatContainer() {
               fileInput.onchange = (e: any) => {
                 const file = e.target?.files?.[0];
                 if (file) {
-                  setInput(prev => `${prev}\n[Attached file: ${file.name}]`);
+                  const reader = new FileReader();
+                  reader.onload = (e) => {
+                    const content = e.target?.result as string || '';
+                    setAttachedFiles(prev => [...prev, { name: file.name, content }]);
+                  };
+                  reader.readAsText(file);
                 }
               };
               fileInput.click();
@@ -311,7 +362,7 @@ export function ChatContainer() {
           ) : (
             <button 
               onClick={handleSend}
-              disabled={!input.trim()}
+              disabled={!input.trim() && attachedFiles.length === 0}
               className="w-9 h-9 rounded-full flex items-center justify-center bg-primary text-primary-foreground shadow-md hover:bg-primary/90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <ArrowUp className="w-4 h-4" />
@@ -352,6 +403,7 @@ export function ChatContainer() {
                 <ChatMessage
                   key={msg.id}
                   message={msg}
+                  onBranch={() => handleBranch(msg.id)}
                   onRegenerate={() => {
                     if (msg.role === 'assistant') {
                       handleSend();

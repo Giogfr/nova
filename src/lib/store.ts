@@ -22,6 +22,8 @@ export interface Conversation {
   title: string;
   messages: Message[];
   updatedAt: number;
+  parentId?: string;
+  isTemporary?: boolean;
   mode?: string;
 }
 
@@ -33,7 +35,7 @@ export interface Provider {
   status: 'connected' | 'offline' | 'unknown' | 'error';
   baseUrl?: string;
   apiKeyStored: boolean;
-  apiKey?: string; // Optional, only kept locally
+  apiKey?: string;
 }
 
 export interface Model {
@@ -41,7 +43,7 @@ export interface Model {
   name: string;
   providerId: string;
   contextWindow?: string;
-  capabilities: string[]; // 'vision', 'tools', 'reasoning'
+  capabilities: string[];
 }
 
 interface AppState {
@@ -59,7 +61,8 @@ interface AppState {
   
   setCurrentWorkspace: (ws: string) => void;
   setCurrentModel: (model: string) => void;
-  createConversation: () => string;
+  createConversation: (isTemporary?: boolean) => string;
+  branchConversation: (conversationId: string, fromMessageId: string) => string;
   setCurrentConversation: (id: string) => void;
   addMessage: (conversationId: string, role: Role, parts: MessagePart[]) => void;
   updateLastMessage: (conversationId: string, updater: (msg: Message) => void) => void;
@@ -97,19 +100,44 @@ export const useAppStore = create<AppState>()(
       setCurrentWorkspace: (ws) => set({ currentWorkspace: ws }),
       setCurrentModel: (model) => set({ currentModel: model }),
 
-      createConversation: () => {
+      createConversation: (isTemporary = false) => {
         const id = uuidv4();
         const newConv: Conversation = {
           id,
-          title: 'New Chat',
+          title: isTemporary ? 'Temporary Chat' : 'New Chat',
           messages: [],
           updatedAt: Date.now(),
+          isTemporary,
         };
         set((state) => ({
           conversations: { ...state.conversations, [id]: newConv },
           currentConversationId: id,
         }));
         return id;
+      },
+
+      branchConversation: (conversationId, fromMessageId) => {
+        const state = get();
+        const targetConv = state.conversations[conversationId];
+        if (!targetConv) return conversationId;
+
+        const messageIdx = targetConv.messages.findIndex(m => m.id === fromMessageId);
+        const slicedMessages = messageIdx !== -1 ? targetConv.messages.slice(0, messageIdx + 1) : targetConv.messages;
+
+        const newId = uuidv4();
+        const branchedConv: Conversation = {
+          id: newId,
+          title: `${targetConv.title} (Branch)`,
+          messages: JSON.parse(JSON.stringify(slicedMessages)),
+          updatedAt: Date.now(),
+          parentId: conversationId,
+        };
+
+        set((s) => ({
+          conversations: { ...s.conversations, [newId]: branchedConv },
+          currentConversationId: newId,
+        }));
+        return newId;
       },
 
       setCurrentConversation: (id) => set({ currentConversationId: id }),
@@ -127,7 +155,7 @@ export const useAppStore = create<AppState>()(
           };
           
           let title = conv.title;
-          if (conv.messages.length === 0 && role === 'user') {
+          if (conv.messages.length === 0 && role === 'user' && !conv.isTemporary) {
             const textPart = parts.find(p => p.type === 'text');
             if (textPart && textPart.type === 'text') {
                title = textPart.text.slice(0, 30) + (textPart.text.length > 30 ? '...' : '');
@@ -186,14 +214,23 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: 'nova-storage',
-      partialize: (state) => ({
-        conversations: state.conversations,
-        currentConversationId: state.currentConversationId,
-        sidebarOpen: state.sidebarOpen,
-        currentModel: state.currentModel,
-        currentWorkspace: state.currentWorkspace,
-        providers: state.providers
-      }),
+      partialize: (state) => {
+        // Exclude temporary chats from persistent storage!
+        const persistentConversations: Record<string, Conversation> = {};
+        for (const [id, conv] of Object.entries(state.conversations)) {
+          if (!conv.isTemporary) {
+            persistentConversations[id] = conv;
+          }
+        }
+        return {
+          conversations: persistentConversations,
+          currentConversationId: state.currentConversationId,
+          sidebarOpen: state.sidebarOpen,
+          currentModel: state.currentModel,
+          currentWorkspace: state.currentWorkspace,
+          providers: state.providers
+        };
+      },
     }
   )
 );

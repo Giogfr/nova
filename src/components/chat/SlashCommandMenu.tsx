@@ -1,5 +1,5 @@
 import React from 'react';
-import { Search, Code, Calculator, FileText, Globe, GraduationCap, X, Sparkles, LayoutPanelLeft } from 'lucide-react';
+import { Search, Code, Calculator, FileText, Globe, GraduationCap, X, Sparkles, LayoutPanelLeft, Minimize2 } from 'lucide-react';
 
 interface SlashCommandMenuProps {
   query: string;
@@ -11,6 +11,7 @@ export function SlashCommandMenu({ query, onSelect, onClose }: SlashCommandMenuP
   const commands = [
     { id: 'research', label: 'Research', icon: Globe, description: 'Search the web for real-time information' },
     { id: 'code', label: 'Code', icon: Code, description: 'Write or analyze code' },
+    { id: 'compact', label: 'Compact', icon: Minimize2, description: 'Summarize context history to save token space' },
     { id: 'math', label: 'Math', icon: Calculator, description: 'Step-by-step mathematical reasoning' },
     { id: 'file', label: 'File', icon: FileText, description: 'Analyze an uploaded document' },
     { id: 'teach', label: 'Teach', icon: GraduationCap, description: 'Socratic tutoring mode' },

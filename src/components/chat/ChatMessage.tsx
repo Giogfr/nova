@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
 import { Message } from '@/lib/store';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { Sparkle, ChevronDown, ChevronUp, BrainCircuit, Globe, Code2, Wrench, RefreshCw, Copy, Check } from 'lucide-react';
+import { Sparkle, ChevronDown, ChevronUp, BrainCircuit, Wrench, RefreshCw, Copy, Check, GitFork } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 
 interface ChatMessageProps {
   message: Message;
   onRegenerate?: () => void;
+  onBranch?: () => void;
 }
 
-export function ChatMessage({ message, onRegenerate }: ChatMessageProps) {
+export function ChatMessage({ message, onRegenerate, onBranch }: ChatMessageProps) {
   const isUser = message.role === 'user';
   const [showReasoning, setShowReasoning] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -41,26 +42,33 @@ export function ChatMessage({ message, onRegenerate }: ChatMessageProps) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between mb-1.5">
           <span className="font-semibold text-sm">{isUser ? 'You' : 'Nova'}</span>
-          {!isUser && (
-            <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+          <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+            <button
+              onClick={handleCopy}
+              className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              title="Copy message"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
+            {onBranch && (
               <button
-                onClick={handleCopy}
+                onClick={onBranch}
                 className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-                title="Copy message"
+                title="Branch conversation from here"
               >
-                {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                <GitFork className="w-3.5 h-3.5" />
               </button>
-              {onRegenerate && (
-                <button
-                  onClick={onRegenerate}
-                  className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-                  title="Regenerate response"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          )}
+            )}
+            {!isUser && onRegenerate && (
+              <button
+                onClick={onRegenerate}
+                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                title="Regenerate response"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="text-foreground/90 space-y-4">
