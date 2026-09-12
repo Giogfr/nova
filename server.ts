@@ -2,31 +2,10 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-
-const DATA_DIR = path.join(process.cwd(), 'data');
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-const DB_FILE = path.join(DATA_DIR, 'nova_store.json');
-
-function loadDb() {
-  try {
-    if (fs.existsSync(DB_FILE)) {
-      return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
-    }
-  } catch (err) {
-    console.error('Failed to read db:', err);
-  }
-  return { conversations: {}, projects: [], library: [], settings: {} };
-}
-
-function saveDb(data: any) {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Failed to save db:', err);
-  }
-}
+import { db, FILES_DIR } from './src/lib/db';
+import { v4 as uuidv4 } from 'uuid';
+import { executeWebSearch } from './src/lib/ai/webSearch';
+import { defaultToolRegistry } from './src/lib/ai/tools';
 
 async function startServer() {
   const app = express();
@@ -34,21 +13,200 @@ async function startServer() {
 
   app.use(express.json({ limit: '50mb' }));
 
-  // Helper to send NDJSON event to response
   const sendEvent = (res: express.Response, event: any) => {
     res.write(`data: ${JSON.stringify(event)}\n\n`);
   };
 
-  // Durable Storage Routes
-  app.get('/api/storage', (req, res) => {
-    return res.json(loadDb());
+  // SQLite Storage Endpoints
+  app.get('/api/storage/conversations', (req, res) => {
+    try {
+      const convs = db.prepare('SELECT * FROM conversations ORDER BY updated_at DESC').all() as any[];
+      const result: Record<string, any> = {};
+
+      for (const conv of convs) {
+        const msgs = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC').all(conv.id) as any[];
+        result[conv.id] = {
+          id: conv.id,
+          title: conv.title,
+          updatedAt: conv.updated_at,
+          isTemporary: Boolean(conv.is_temporary),
+          parentId: conv.parent_id,
+          messages: msgs.map(m => ({
+            id: m.id,
+            role: m.role,
+            parts: JSON.parse(m.parts_json),
+            createdAt: m.created_at,
+          })),
+        };
+      }
+      return res.json({ conversations: result });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
   });
 
-  app.post('/api/storage', (req, res) => {
-    const current = loadDb();
-    const updated = { ...current, ...req.body };
-    saveDb(updated);
-    return res.json({ success: true, state: updated });
+  app.post('/api/storage/conversations', (req, res) => {
+    try {
+      const { conversation } = req.body;
+      if (!conversation || !conversation.id) {
+        return res.status(400).json({ error: 'Invalid conversation payload' });
+      }
+
+      const insertConv = db.prepare(`
+        INSERT INTO conversations (id, title, created_at, updated_at, is_temporary, parent_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          title = excluded.title,
+          updated_at = excluded.updated_at,
+          is_temporary = excluded.is_temporary
+      `);
+
+      insertConv.run(
+        conversation.id,
+        conversation.title || 'New Chat',
+        conversation.createdAt || Date.now(),
+        conversation.updatedAt || Date.now(),
+        conversation.isTemporary ? 1 : 0,
+        conversation.parentId || null
+      );
+
+      if (Array.isArray(conversation.messages)) {
+        const insertMsg = db.prepare(`
+          INSERT INTO messages (id, conversation_id, role, parts_json, created_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            parts_json = excluded.parts_json
+        `);
+
+        for (const msg of conversation.messages) {
+          insertMsg.run(
+            msg.id,
+            conversation.id,
+            msg.role,
+            JSON.stringify(msg.parts || []),
+            msg.createdAt || Date.now()
+          );
+        }
+      }
+
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/storage/conversations/:id', (req, res) => {
+    try {
+      const { id } = req.params;
+      db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
+      db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Projects Endpoints
+  app.get('/api/storage/projects', (req, res) => {
+    try {
+      const projects = db.prepare('SELECT * FROM projects ORDER BY updated_at DESC').all();
+      return res.json({ projects });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/storage/projects', (req, res) => {
+    try {
+      const { id, name, description, instructions } = req.body;
+      const stmt = db.prepare(`
+        INSERT INTO projects (id, name, description, instructions, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          description = excluded.description,
+          instructions = excluded.instructions,
+          updated_at = excluded.updated_at
+      `);
+      stmt.run(id, name, description || '', instructions || '', Date.now());
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/storage/projects/:id', (req, res) => {
+    try {
+      db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id);
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Library & Persistent Disk File Storage Endpoints
+  app.get('/api/storage/library', (req, res) => {
+    try {
+      const files = db.prepare('SELECT * FROM library_files ORDER BY created_at DESC').all();
+      return res.json({ files });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/storage/library/upload', (req, res) => {
+    try {
+      const { name, content, mimeType } = req.body;
+      if (!name || content === undefined) {
+        return res.status(400).json({ error: 'Missing name or content' });
+      }
+
+      const fileId = uuidv4();
+      const safeFilename = `${fileId}_${path.basename(name).replace(/[^a-zA-Z0-9_.-]/g, '_')}`;
+      const diskPath = path.join(FILES_DIR, safeFilename);
+
+      fs.writeFileSync(diskPath, content, 'utf-8');
+      const sizeBytes = Buffer.byteLength(content, 'utf-8');
+
+      const stmt = db.prepare(`
+        INSERT INTO library_files (id, name, file_path, mime_type, size_bytes, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run(fileId, name, diskPath, mimeType || 'text/plain', sizeBytes, Date.now());
+
+      return res.json({
+        success: true,
+        file: { id: fileId, name, filePath: diskPath, mimeType: mimeType || 'text/plain', sizeBytes, createdAt: Date.now() }
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/storage/library/file/:id', (req, res) => {
+    try {
+      const file: any = db.prepare('SELECT * FROM library_files WHERE id = ?').get(req.params.id);
+      if (!file || !fs.existsSync(file.file_path)) {
+        return res.status(404).json({ error: 'File not found' });
+      }
+      const content = fs.readFileSync(file.file_path, 'utf-8');
+      return res.json({ file, content });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/storage/library/:id', (req, res) => {
+    try {
+      const file: any = db.prepare('SELECT * FROM library_files WHERE id = ?').get(req.params.id);
+      if (file && fs.existsSync(file.file_path)) {
+        fs.unlinkSync(file.file_path);
+      }
+      db.prepare('DELETE FROM library_files WHERE id = ?').run(req.params.id);
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
   });
 
   // Test Provider Connection Endpoint
@@ -109,7 +267,7 @@ async function startServer() {
 
       return res.json({ success: true });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: err.message || 'Connection failed' });
+      return res.status(500).json({ error: err.message || 'Connection failed' });
     }
   });
 
@@ -159,19 +317,33 @@ async function startServer() {
     }
   });
 
-  // Main Streaming Universal Chat Proxy API
+  // Main Streaming Universal Chat Proxy API with Real Tool Execution Loop
   app.post('/api/chat', async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
     try {
-      const { modelId, providerConfig, messages, reasoningEffort, systemInstruction, webSearchEnabled } = req.body;
+      const { modelId, providerConfig, messages, reasoningEffort, systemInstruction, toolsEnabled } = req.body;
 
       const providerType = providerConfig?.type || 'gemini';
       const apiKey = providerConfig?.apiKey || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY;
 
-      // Handle Mock / Demo Provider when no key / offline testing
+      const lastUserMsg = messages[messages.length - 1]?.content || '';
+
+      // Perform Real Web Search Tool execution if prompt asks for research/search or tools are enabled for search queries
+      if (toolsEnabled && (lastUserMsg.toLowerCase().startsWith('research:') || lastUserMsg.toLowerCase().includes('search web'))) {
+        const searchQuery = lastUserMsg.replace(/^research:\s*/i, '').replace(/search web\s*/i, '').trim();
+        sendEvent(res, { type: 'tool_start', toolCall: { id: uuidv4(), name: 'Web Search', args: JSON.stringify({ query: searchQuery }) } });
+
+        const searchResults = await executeWebSearch(searchQuery);
+        sendEvent(res, { type: 'tool_complete', toolCall: { id: uuidv4(), name: 'Web Search', result: JSON.stringify(searchResults) } });
+
+        // Augment prompt with retrieved search results
+        const searchContext = searchResults.map(r => `[Source: ${r.title}] (${r.url})\n${r.snippet}`).join('\n\n');
+        messages[messages.length - 1].content = `${lastUserMsg}\n\n[Retrieved Web Sources]:\n${searchContext}`;
+      }
+
       if (providerType === 'mock' || modelId === 'nova-mock') {
         sendEvent(res, { type: 'reasoning_delta', reasoning: 'Analyzing prompt structure and context...\nEvaluating requirements...\nFormulating optimal response architecture.' });
         await new Promise(r => setTimeout(r, 600));
@@ -188,7 +360,6 @@ async function startServer() {
         return res.end();
       }
 
-      // 1. Ollama streaming
       if (providerType === 'ollama') {
         const baseUrl = (providerConfig?.baseUrl || 'http://localhost:11434').replace(/\/$/, '');
         const ollamaResp = await fetch(`${baseUrl}/api/chat`, {
@@ -230,7 +401,6 @@ async function startServer() {
         return res.end();
       }
 
-      // 2. OpenAI Compatible APIs (OpenAI, OpenRouter, DeepSeek, Groq, Together, Fireworks, Mistral, Cerebras, LMStudio, Custom)
       if (
         providerType === 'openai' ||
         providerType === 'openrouter' ||
@@ -267,10 +437,6 @@ async function startServer() {
         };
         if (apiKey) {
           headers['Authorization'] = `Bearer ${apiKey}`;
-        }
-        if (providerType === 'openrouter') {
-          headers['HTTP-Referer'] = 'https://nova.ai';
-          headers['X-Title'] = 'Nova AI';
         }
 
         const payload: any = {
@@ -333,7 +499,6 @@ async function startServer() {
         return res.end();
       }
 
-      // 3. Google Gemini Native / Fallback Proxy
       const geminiKey = apiKey || process.env.GEMINI_API_KEY;
       if (!geminiKey) {
         sendEvent(res, { type: 'text_delta', text: `Please configure an API Key for provider "${providerType}" in Settings -> Models & Providers to enable live AI responses.` });
@@ -392,7 +557,6 @@ async function startServer() {
     }
   });
 
-  // Vite middleware for development vs static production server
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

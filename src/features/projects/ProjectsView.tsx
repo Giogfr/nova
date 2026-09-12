@@ -1,62 +1,70 @@
-import React, { useState } from 'react';
-import { Folder, Plus, Search, MoreHorizontal, FileText, Trash2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Folder, Plus, Search, FileText, Trash2 } from 'lucide-react';
 
 interface Project {
   id: string;
   name: string;
   description: string;
   instructions: string;
-  updatedAt: string;
+  updated_at?: number;
 }
 
 export function ProjectsView() {
   const [query, setQuery] = useState('');
-  const [projects, setProjects] = useState<Project[]>([
-    {
-      id: 'p1',
-      name: 'Nova Product Engineering',
-      description: 'Core application takeover, AI streaming gateway, and workspace UI.',
-      instructions: 'Focus on high visual quality, ChatGPT-familiar UX, and multi-provider compatibility.',
-      updatedAt: 'Just now',
-    },
-    {
-      id: 'p2',
-      name: 'Local Models & Ollama Integration',
-      description: 'Local host discovery and model execution pipeline.',
-      instructions: 'Prioritize local privacy and non-cloud execution when selected.',
-      updatedAt: '2 hours ago',
-    },
-  ]);
+  const [projects, setProjects] = useState<Project[]>([]);
 
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newInst, setNewInst] = useState('');
 
-  const handleCreate = () => {
+  const fetchProjects = async () => {
+    try {
+      const resp = await fetch('/api/storage/projects');
+      if (resp.ok) {
+        const json = await resp.json();
+        setProjects(json.projects || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch projects:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchProjects();
+  }, []);
+
+  const handleCreate = async () => {
     if (!newName.trim()) return;
-    const proj: Project = {
+    const proj = {
       id: `p_${Date.now()}`,
       name: newName.trim(),
       description: newDesc.trim() || 'No description provided.',
-      instructions: newInst.trim() || 'Default instructions apply.',
-      updatedAt: 'Just now',
+      instructions: newInst.trim() || 'Default project instructions apply.',
     };
-    setProjects([proj, ...projects]);
+
+    await fetch('/api/storage/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(proj),
+    });
+
     setNewName('');
     setNewDesc('');
     setNewInst('');
     setIsCreating(false);
+    fetchProjects();
   };
 
-  const handleDelete = (id: string, e: React.MouseEvent) => {
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setProjects(projects.filter(p => p.id !== id));
+    await fetch(`/api/storage/projects/${id}`, { method: 'DELETE' });
+    fetchProjects();
   };
 
   const filtered = projects.filter(p =>
     p.name.toLowerCase().includes(query.toLowerCase()) ||
-    p.description.toLowerCase().includes(query.toLowerCase())
+    p.description?.toLowerCase().includes(query.toLowerCase())
   );
 
   return (
@@ -64,11 +72,11 @@ export function ProjectsView() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-serif text-foreground tracking-tight mb-2">Projects</h1>
-          <p className="text-sm text-muted-foreground">Organize your chats, files, and custom instructions into dedicated workspaces.</p>
+          <p className="text-sm text-muted-foreground">Organize your chats, files, and custom instructions into dedicated workspaces stored in SQLite.</p>
         </div>
         <button
           onClick={() => setIsCreating(true)}
-          className="flex items-center gap-2 h-9 px-4 rounded-full bg-primary text-primary-foreground text-sm font-medium transition-colors shadow-sm hover:opacity-90"
+          className="flex items-center gap-2 h-9 px-4 rounded-full bg-primary text-primary-foreground text-sm font-medium transition-colors shadow-sm hover:opacity-90 cursor-pointer"
         >
           <Plus className="w-4 h-4" /> New Project
         </button>
@@ -115,7 +123,7 @@ export function ProjectsView() {
               <button
                 onClick={handleCreate}
                 disabled={!newName.trim()}
-                className="px-4 py-2 rounded-xl text-xs font-medium bg-primary text-primary-foreground shadow-sm hover:opacity-90 disabled:opacity-50"
+                className="px-4 py-2 rounded-xl text-xs font-medium bg-primary text-primary-foreground shadow-sm hover:opacity-90 disabled:opacity-50 cursor-pointer"
               >
                 Save Project
               </button>
@@ -165,7 +173,7 @@ export function ProjectsView() {
                 </div>
               </div>
               <div className="w-32 text-right text-xs text-muted-foreground hidden sm:block">
-                {project.updatedAt}
+                {project.updated_at ? new Date(project.updated_at).toLocaleDateString() : 'Just now'}
               </div>
               <div className="w-12 flex justify-end">
                 <button

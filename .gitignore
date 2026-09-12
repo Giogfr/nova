@@ -1,8 +1,33 @@
-node_modules/
-build/
-dist/
-coverage/
-.DS_Store
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Build Outputs
+dist
+dist-ssr
+*.local
+
+# Logs
+logs
 *.log
-.env*
-!.env.example
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Database & Runtime Data
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/files/*
+!data/files/.gitkeep
+
+# Environment
+.env
+.env.production
+.env.development
+
+# Verification
+/home/jules/verification

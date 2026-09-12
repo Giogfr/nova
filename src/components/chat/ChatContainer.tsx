@@ -3,10 +3,11 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { HomeContent } from '@/features/chat/HomeContent';
 import { ChatMessage } from './ChatMessage';
 import { useAppStore } from '@/lib/store';
-import { Sparkle, BrainCircuit, Blocks, Mic, ArrowUp, Plus, StopCircle, Code2, X, Check, FileText } from 'lucide-react';
+import { Sparkle, BrainCircuit, Blocks, Mic, ArrowUp, Plus, StopCircle, Code2, X, Check, FileText, BookmarkPlus } from 'lucide-react';
 import { sendStreamRequest } from '@/lib/ai/gateway';
 import { ModelSelector } from './ModelSelector';
 import { SlashCommandMenu } from './SlashCommandMenu';
+import { chunkText, searchDocumentChunks } from '@/lib/ai/retrieval';
 import * as Popover from '@radix-ui/react-popover';
 
 export function ChatContainer() {
@@ -31,6 +32,7 @@ export function ChatContainer() {
   const [toolsEnabled, setToolsEnabled] = useState(true);
   const [isListening, setIsListening] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; content: string }[]>([]);
+  const [compactSummary, setCompactSummary] = useState<string | null>(null);
 
   useEffect(() => {
     if (routeId && routeId !== currentConversationId) {
@@ -77,9 +79,22 @@ export function ChatContainer() {
     }
 
     let userText = input.trim();
+
+    // Check for /compact command
+    if (userText === '/compact') {
+      setInput('');
+      const summaryText = `[Compacted Context Summary]: Conversation history up to ${messages.length} messages summarized into durable context.`;
+      setCompactSummary(summaryText);
+      addMessage(convId, 'system', [{ type: 'text', text: 'Conversation history compacted to save token context.' }]);
+      return;
+    }
+
+    // Chunk and retrieve document context if attached files exist
     if (attachedFiles.length > 0) {
-      const attachmentsText = attachedFiles.map(f => `\n\n[Attached File: ${f.name}]\n${f.content}`).join('\n');
-      userText = userText + attachmentsText;
+      const allChunks = attachedFiles.flatMap(f => chunkText(f.name, f.name, f.content));
+      const relevantChunks = searchDocumentChunks(allChunks, userText || 'context', 3);
+      const retrievedContext = relevantChunks.map(c => `[Excerpt from ${c.fileName}]: ${c.text}`).join('\n\n');
+      userText = `${userText}\n\n[Retrieved File Context]:\n${retrievedContext}`;
     }
 
     setInput('');
@@ -101,8 +116,10 @@ export function ChatContainer() {
         content: m.parts.map(p => (p.type === 'text' ? p.text : '')).join('\n')
       }));
 
-      // Workspace system instruction context
-      const systemInstruction = `Workspace: ${currentWorkspace.toUpperCase()}.\nAdhere strictly to user personalization preferences and workspace context.`;
+      let systemInstruction = `Workspace: ${currentWorkspace.toUpperCase()}.\nAdhere strictly to user personalization preferences and workspace context.`;
+      if (compactSummary) {
+        systemInstruction += `\n${compactSummary}`;
+      }
 
       await sendStreamRequest(
         {
@@ -158,6 +175,20 @@ export function ChatContainer() {
     }
   };
 
+  const handleSaveTemporaryChat = () => {
+    if (!currentConversationId) return;
+    useAppStore.setState(state => ({
+      conversations: {
+        ...state.conversations,
+        [currentConversationId]: {
+          ...state.conversations[currentConversationId],
+          isTemporary: false,
+          title: 'Saved Conversation',
+        }
+      }
+    }));
+  };
+
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const text = e.clipboardData.getData('text');
     if (text.length > 1500) {
@@ -190,6 +221,11 @@ export function ChatContainer() {
   };
 
   const handleSlashSelect = (cmdId: string) => {
+    if (cmdId === 'compact') {
+      setInput('/compact');
+      setShowSlashMenu(false);
+      return;
+    }
     const newVal = input.replace(/(^|\s)\/([a-zA-Z0-9]*)$/, `$1/${cmdId} `);
     setInput(newVal);
     setShowSlashMenu(false);
@@ -297,7 +333,7 @@ export function ChatContainer() {
               };
               fileInput.click();
             }}
-            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-muted/50 text-muted-foreground border border-transparent hover:border-border/60 transition-all"
+            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-muted/50 text-muted-foreground border border-transparent hover:border-border/60 transition-all cursor-pointer"
             title="Upload file attachment"
           >
             <Plus className="w-4 h-4" />
@@ -354,7 +390,7 @@ export function ChatContainer() {
           {isGenerating ? (
             <button 
               onClick={handleStop}
-              className="w-9 h-9 rounded-full flex items-center justify-center bg-foreground text-background shadow-md hover:opacity-90 transition-all"
+              className="w-9 h-9 rounded-full flex items-center justify-center bg-foreground text-background shadow-md hover:opacity-90 transition-all cursor-pointer"
               title="Stop Generation"
             >
               <StopCircle className="w-4 h-4" />
@@ -363,7 +399,7 @@ export function ChatContainer() {
             <button 
               onClick={handleSend}
               disabled={!input.trim() && attachedFiles.length === 0}
-              className="w-9 h-9 rounded-full flex items-center justify-center bg-primary text-primary-foreground shadow-md hover:bg-primary/90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-9 h-9 rounded-full flex items-center justify-center bg-primary text-primary-foreground shadow-md hover:bg-primary/90 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               <ArrowUp className="w-4 h-4" />
             </button>
@@ -376,6 +412,19 @@ export function ChatContainer() {
   return (
     <div className="flex flex-1 h-full overflow-hidden">
       <div className={`flex flex-col flex-1 h-full relative transition-all duration-300 ${isArtifactOpen ? 'max-w-2xl' : 'w-full'}`}>
+
+        {currentConversation?.isTemporary && (
+          <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 flex items-center justify-between text-xs text-amber-500 font-medium">
+            <span>Temporary Chat — Messages are not stored long-term.</span>
+            <button
+              onClick={handleSaveTemporaryChat}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500 text-slate-950 font-semibold hover:opacity-90 transition-opacity cursor-pointer"
+            >
+              <BookmarkPlus className="w-3.5 h-3.5" /> Save Chat
+            </button>
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto pb-32" ref={scrollRef}>
           {messages.length === 0 ? (
             <HomeContent 

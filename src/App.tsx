@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
 import { ChatContainer } from './components/chat/ChatContainer';
@@ -13,8 +14,13 @@ import { PromptsView } from './features/prompts/PromptsView';
 import { ToolsView } from './features/tools/ToolsView';
 import { ModelsView } from './features/models/ModelsView';
 import { ModelCompareView } from './features/models/ModelCompareView';
+import { useAppStore } from './lib/store';
 
 export default function App() {
+  useEffect(() => {
+    useAppStore.getState().loadFromBackend();
+  }, []);
+
   return (
     <BrowserRouter>
       <AppLayout>

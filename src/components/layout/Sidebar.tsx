@@ -3,7 +3,7 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { 
   Sparkle, Plus, Search, Folder, BookOpen, UserCircle, 
   MessageSquareDashed, Blocks, Cpu, Home, GraduationCap, 
-  Code2, Settings, MessageSquare, MoreHorizontal, Trash2, Edit2
+  Code2, Settings, MessageSquare, MoreHorizontal, Trash2, Edit2, GitFork
 } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 
 export function Sidebar() {
-  const { toggleSidebar, createConversation, conversations, currentWorkspace, deleteConversation } = useAppStore();
+  const { toggleSidebar, createConversation, conversations, currentWorkspace, deleteConversation, branchConversation } = useAppStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -106,6 +106,18 @@ export function Sidebar() {
                         className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-surface-hover cursor-pointer"
                       >
                         <Edit2 className="w-3.5 h-3.5" /> Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => {
+                          const lastMsg = chat.messages[chat.messages.length - 1];
+                          if (lastMsg) {
+                            const newId = branchConversation(chat.id, lastMsg.id);
+                            navigate(`/chat/${newId}`);
+                          }
+                        }}
+                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-surface-hover cursor-pointer"
+                      >
+                        <GitFork className="w-3.5 h-3.5" /> Fork Branch
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         onClick={() => deleteConversation(chat.id)}
